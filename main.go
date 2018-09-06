@@ -41,13 +41,16 @@ func server(address string) {
 }
 
 func client(address string) {
-	// when would this thing fail?
-	conn, err := net.Dial("udp", address)
+	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		panic(err)
 	}
 
-	// why do we need to close?
+	conn, err := net.DialUDP("udp", nil, raddr)
+	if err != nil {
+		panic(err)
+	}
+
 	defer conn.Close()
 
 	n, err := conn.Write([]byte("hello from the client"))
@@ -58,12 +61,12 @@ func client(address string) {
 	fmt.Printf("packet-written: bytes=%d\n", n)
 
 	buffer := make([]byte, maxBufferSize)
-	n, err = conn.Read(buffer)
+	n, addr, err := conn.ReadFrom(buffer)
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Printf("packet-received: bytes=%d\n", n)
+	fmt.Printf("packet-received: bytes=%d from=%s\n", n, addr.String())
 }
 
 func main() {
