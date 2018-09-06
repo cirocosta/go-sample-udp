@@ -12,9 +12,14 @@ var (
 	host     = flag.String("host", "127.0.0.1", "address to send to or receive from")
 )
 
+// maxBufferSize specifies the size of the buffers that
+// are used to temporarily hold data from the UDP packets
+// that we receive.
 const maxBufferSize = 1024
 
-// TODO - make this thing an echo server
+// server wraps all the UDP echo server functionality.
+// ps.: the server is capable of answering to a single
+// client at a time.
 func server(address string) {
 	pc, err := net.ListenPacket("udp", address)
 	if err != nil {
@@ -30,7 +35,8 @@ func server(address string) {
 		panic(err)
 	}
 
-	fmt.Printf("packet-received: bytes=%d from=%s\n", n, addr.String())
+	fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
+		n, addr.String(), string(buffer[:n]))
 
 	n, err = pc.WriteTo(buffer[:n], addr)
 	if err != nil {
@@ -40,6 +46,9 @@ func server(address string) {
 	fmt.Printf("packet-written: bytes=%d to=%s\n", n, addr.String())
 }
 
+// client wraps the whole functionality of a UDP client that sends
+// a message and waits for a response coming back from the server
+// that it initially targetted.
 func client(address string) {
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
@@ -66,7 +75,8 @@ func client(address string) {
 		panic(err)
 	}
 
-	fmt.Printf("packet-received: bytes=%d from=%s\n", n, addr.String())
+	fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
+		n, addr.String(), string(buffer[:n]))
 }
 
 func main() {
