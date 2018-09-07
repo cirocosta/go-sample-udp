@@ -24,7 +24,7 @@ const maxBufferSize = 1024
 // server wraps all the UDP echo server functionality.
 // ps.: the server is capable of answering to a single
 // client at a time.
-func server(address string) {
+func server(ctx context.Context, address string) (err error) {
 	// ListenPacket provides us a wrapper around ListenUDP so that
 	// we don't need to call `net.ResolveUDPAddr` and then subsequentially
 	// perform a `ListenUDP` with the UDP address.
@@ -34,51 +34,65 @@ func server(address string) {
 	// methods and interfaces are more broad, also covering `ip`.
 	pc, err := net.ListenPacket("udp", address)
 	if err != nil {
-		panic(err)
+		return
 	}
 
 	// `Close`ing the packet "connection" means cleaning the data structures
 	// allocated for holding information about the listening socket.
 	defer pc.Close()
 
+	doneChan := make(chan error, 1)
 	buffer := make([]byte, maxBufferSize)
 
-	// By reading from the connection into the buffer we block until there's
-	// new content in the socket that we're listening for new packets.
-	//
-	// Whenever new packets arrive, `buffer` gets filled and we can continue
-	// the execution.
-	n, addr, err := pc.ReadFrom(buffer)
-	if err != nil {
-		panic(err)
+	go func() {
+		// By reading from the connection into the buffer we block until there's
+		// new content in the socket that we're listening for new packets.
+		//
+		// Whenever new packets arrive, `buffer` gets filled and we can continue
+		// the execution.
+		n, addr, err := pc.ReadFrom(buffer)
+		if err != nil {
+			doneChan <- err
+			return
+		}
+
+		fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
+			n, addr.String(), string(buffer[:n]))
+
+		// Q: could this thing ever block?
+		n, err = pc.WriteTo(buffer[:n], addr)
+		if err != nil {
+			doneChan <- err
+			return
+		}
+
+		fmt.Printf("packet-written: bytes=%d to=%s\n", n, addr.String())
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("cancelled")
+		err = ctx.Err()
+	case err = <-doneChan:
 	}
 
-	fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
-		n, addr.String(), string(buffer[:n]))
-
-	// Q: could this thing ever block?
-	n, err = pc.WriteTo(buffer[:n], addr)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("packet-written: bytes=%d to=%s\n", n, addr.String())
+	return
 }
 
 // client wraps the whole functionality of a UDP client that sends
 // a message and waits for a response coming back from the server
 // that it initially targetted.
-func client(ctx context.Context, address string) {
+func client(ctx context.Context, address string) (err error) {
 	// CC: explain why this is resolution is needed.
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
-		panic(err)
+		return
 	}
 
 	// Q: What is DialUDP really doing?
 	conn, err := net.DialUDP("udp", nil, raddr)
 	if err != nil {
-		panic(err)
+		return
 	}
 
 	defer conn.Close()
@@ -86,7 +100,7 @@ func client(ctx context.Context, address string) {
 	// Q: Is is possible for `write` to block?
 	n, err := conn.Write([]byte("hello from the client"))
 	if err != nil {
-		panic(err)
+		return
 	}
 
 	fmt.Printf("packet-written: bytes=%d\n", n)
@@ -116,12 +130,8 @@ func client(ctx context.Context, address string) {
 	select {
 	case <-ctx.Done():
 		fmt.Println("cancelled")
-		return
+		err = ctx.Err()
 	case err = <-doneChan:
-		if err != nil {
-			panic(err)
-		}
-		return
 	}
 
 	return
@@ -130,7 +140,11 @@ func client(ctx context.Context, address string) {
 func main() {
 	flag.Parse()
 
-	address := fmt.Sprintf("%s:%d", *host, *port)
+	var (
+		err     error
+		address = fmt.Sprintf("%s:%d", *host, *port)
+	)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
@@ -142,10 +156,22 @@ func main() {
 
 	if *isServer {
 		fmt.Println("running as a server on " + address)
-		server(address)
+		for {
+			err = server(ctx, address)
+			if err != nil {
+				if err == context.Canceled {
+					return
+				}
+
+				panic(err)
+			}
+		}
 		return
 	}
 
 	fmt.Println("sending to " + address)
-	client(ctx, address)
+	err = client(ctx, address)
+	if err != nil && err != context.Canceled {
+		panic(err)
+	}
 }
