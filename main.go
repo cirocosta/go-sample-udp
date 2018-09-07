@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"net"
@@ -67,7 +68,7 @@ func server(address string) {
 // client wraps the whole functionality of a UDP client that sends
 // a message and waits for a response coming back from the server
 // that it initially targetted.
-func client(address string) {
+func client(ctx context.Context, address string) {
 	// CC: explain why this is resolution is needed.
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
@@ -90,31 +91,53 @@ func client(address string) {
 
 	fmt.Printf("packet-written: bytes=%d\n", n)
 
-	// Q: How can we make sure that we're reading all that
-	//    we want? e.g., what's the best way of making sure
-	//    that we were able to consume the whole msg that is
-	//    already in the queue?
-	buffer := make([]byte, maxBufferSize)
+	doneChan := make(chan error, 1)
 
-	// Q: How can we set a timeout for this?
-	n, addr, err := conn.ReadFrom(buffer)
-	if err != nil {
-		panic(err)
+	go func() {
+		// Q: How can we make sure that we're reading all that
+		//    we want? e.g., what's the best way of making sure
+		//    that we were able to consume the whole msg that is
+		//    already in the queue?
+		buffer := make([]byte, maxBufferSize)
+
+		// Q: How can we set a timeout for this?
+		n, addr, err := conn.ReadFrom(buffer)
+		if err != nil {
+			doneChan <- err
+			return
+		}
+
+		fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
+			n, addr.String(), string(buffer[:n]))
+
+		doneChan <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		fmt.Println("cancelled")
+		return
+	case err = <-doneChan:
+		if err != nil {
+			panic(err)
+		}
+		return
 	}
 
-	fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
-		n, addr.String(), string(buffer[:n]))
+	return
 }
 
 func main() {
 	flag.Parse()
 
 	address := fmt.Sprintf("%s:%d", *host, *port)
+	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
 		sigChan := make(chan os.Signal)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
+		cancel()
 	}()
 
 	if *isServer {
@@ -124,5 +147,5 @@ func main() {
 	}
 
 	fmt.Println("sending to " + address)
-	client(address)
+	client(ctx, address)
 }
