@@ -45,28 +45,30 @@ func server(ctx context.Context, address string) (err error) {
 	buffer := make([]byte, maxBufferSize)
 
 	go func() {
-		// By reading from the connection into the buffer we block until there's
-		// new content in the socket that we're listening for new packets.
-		//
-		// Whenever new packets arrive, `buffer` gets filled and we can continue
-		// the execution.
-		n, addr, err := pc.ReadFrom(buffer)
-		if err != nil {
-			doneChan <- err
-			return
+		for {
+			// By reading from the connection into the buffer we block until there's
+			// new content in the socket that we're listening for new packets.
+			//
+			// Whenever new packets arrive, `buffer` gets filled and we can continue
+			// the execution.
+			n, addr, err := pc.ReadFrom(buffer)
+			if err != nil {
+				doneChan <- err
+				return
+			}
+
+			fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
+				n, addr.String(), string(buffer[:n]))
+
+			// Q: could this thing ever block?
+			n, err = pc.WriteTo(buffer[:n], addr)
+			if err != nil {
+				doneChan <- err
+				return
+			}
+
+			fmt.Printf("packet-written: bytes=%d to=%s\n", n, addr.String())
 		}
-
-		fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
-			n, addr.String(), string(buffer[:n]))
-
-		// Q: could this thing ever block?
-		n, err = pc.WriteTo(buffer[:n], addr)
-		if err != nil {
-			doneChan <- err
-			return
-		}
-
-		fmt.Printf("packet-written: bytes=%d to=%s\n", n, addr.String())
 	}()
 
 	select {
@@ -156,15 +158,13 @@ func main() {
 
 	if *isServer {
 		fmt.Println("running as a server on " + address)
-		for {
-			err = server(ctx, address)
-			if err != nil {
-				if err == context.Canceled {
-					return
-				}
-
-				panic(err)
+		err = server(ctx, address)
+		if err != nil {
+			if err == context.Canceled {
+				return
 			}
+
+			panic(err)
 		}
 		return
 	}
