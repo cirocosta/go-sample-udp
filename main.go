@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 var (
 	isServer = flag.Bool("server", false, "whether it should be run as a server")
 	port     = flag.Uint("port", 1337, "port to send to or receive from")
 	host     = flag.String("host", "127.0.0.1", "address to send to or receive from")
+	timeout  = flag.Duration("timeout", 15*time.Second, "read and write blocking deadlines")
 )
 
 // maxBufferSize specifies the size of the buffers that
@@ -44,13 +46,21 @@ func server(ctx context.Context, address string) (err error) {
 	doneChan := make(chan error, 1)
 	buffer := make([]byte, maxBufferSize)
 
+	// Given that waiting for packets to arrive is blocking by nature and we want
+	// to be able of cancelling such action if desired, we do that in a separate
+	// go routine.
 	go func() {
 		for {
-			// By reading from the connection into the buffer we block until there's
+
+			// By reading from the connection into the buffer, we block until there's
 			// new content in the socket that we're listening for new packets.
 			//
 			// Whenever new packets arrive, `buffer` gets filled and we can continue
 			// the execution.
+			//
+			// note.: `buffer` is not being reset between runs.
+			//	  It's expected that only `n` reads are read from it whenever
+			//	  inspecting its contents.
 			n, addr, err := pc.ReadFrom(buffer)
 			if err != nil {
 				doneChan <- err
@@ -60,7 +70,21 @@ func server(ctx context.Context, address string) (err error) {
 			fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
 				n, addr.String(), string(buffer[:n]))
 
-			// Q: could this thing ever block?
+			// Setting a deadline for the `write` operation allows us to not block
+			// for longer than a specific timeout.
+			//
+			// In the case of a write operation, that'd mean waiting for the send
+			// queue to be freed enough so that we are able to proceed.
+			//
+			// TODO: try to simulate a scenario where we can see this failing.
+			deadline := time.Now().Add(*timeout)
+			err = pc.SetReadDeadline(deadline)
+			if err != nil {
+				doneChan <- err
+				return
+			}
+
+			// Write the packet to the client.
 			n, err = pc.WriteTo(buffer[:n], addr)
 			if err != nil {
 				doneChan <- err
@@ -91,32 +115,54 @@ func client(ctx context.Context, address string) (err error) {
 		return
 	}
 
-	// Q: What is DialUDP really doing?
+	// Although we're not in a connection-oriented transport,
+	// the act of `dialing` is analogous to the act of performing
+	// a `connect(2)` syscall for a socket of type SOCK_DGRAM:
+	// - it forces the underlying socket to only read and write
+	//   to and from a specific remote address.
 	conn, err := net.DialUDP("udp", nil, raddr)
 	if err != nil {
 		return
 	}
 
+	// Closes the underlying file descriptor associated with the,
+	// socket so that it no longer refers to any file.
 	defer conn.Close()
-
-	// Q: Is is possible for `write` to block?
-	n, err := conn.Write([]byte("hello from the client"))
-	if err != nil {
-		return
-	}
-
-	fmt.Printf("packet-written: bytes=%d\n", n)
 
 	doneChan := make(chan error, 1)
 
 	go func() {
+		// It is possible that this action blocks, although this
+		// should only occur in very resource-intensive situations:
+		// - when you've filled up the socket buffer and the OS
+		//   can't dequeue the queue fast enough.
+		n, err := conn.Write([]byte("hello from the client"))
+		if err != nil {
+			doneChan <- err
+			return
+		}
+
+		fmt.Printf("packet-written: bytes=%d\n", n)
+
 		// Q: How can we make sure that we're reading all that
 		//    we want? e.g., what's the best way of making sure
 		//    that we were able to consume the whole msg that is
 		//    already in the queue?
+		//
+		// Q: What happens if we play around with the rcv/wrt
+		//    buffer size?
 		buffer := make([]byte, maxBufferSize)
 
-		// Q: How can we set a timeout for this?
+		// Set a deadline for the ReadOperation so that we don't
+		// wait forever for a server that might not respond on
+		// a resonable amount of time.
+		deadline := time.Now().Add(*timeout)
+		err = conn.SetReadDeadline(deadline)
+		if err != nil {
+			doneChan <- err
+			return
+		}
+
 		n, addr, err := conn.ReadFrom(buffer)
 		if err != nil {
 			doneChan <- err
