@@ -1,5 +1,6 @@
 Sample UDP Server and Client
 
+
 Usage:
 
 	1. retrieve the code and install it
@@ -12,5 +13,8 @@ Usage:
 
 	3. open another terminal and make the client send a message
 
-		go-sample-udp
+		echo "my-message" | go-sample-udp
 
+
+More:
+	https://ops.tips
