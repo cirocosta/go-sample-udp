@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"fmt"
 	"net"
 	"os"
@@ -16,6 +17,7 @@ var (
 	port     = flag.Uint("port", 1337, "port to send to or receive from")
 	host     = flag.String("host", "127.0.0.1", "address to send to or receive from")
 	timeout  = flag.Duration("timeout", 15*time.Second, "read and write blocking deadlines")
+	input = flag.String("input", "-", "file with contents to send over udp")
 )
 
 // maxBufferSize specifies the size of the buffers that
@@ -51,7 +53,6 @@ func server(ctx context.Context, address string) (err error) {
 	// go routine.
 	go func() {
 		for {
-
 			// By reading from the connection into the buffer, we block until there's
 			// new content in the socket that we're listening for new packets.
 			//
@@ -67,8 +68,8 @@ func server(ctx context.Context, address string) (err error) {
 				return
 			}
 
-			fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
-				n, addr.String(), string(buffer[:n]))
+			fmt.Printf("packet-received: bytes=%d from=%s\n",
+				n, addr.String())
 
 			// Setting a deadline for the `write` operation allows us to not block
 			// for longer than a specific timeout.
@@ -78,13 +79,13 @@ func server(ctx context.Context, address string) (err error) {
 			//
 			// TODO: try to simulate a scenario where we can see this failing.
 			deadline := time.Now().Add(*timeout)
-			err = pc.SetReadDeadline(deadline)
+			err = pc.SetWriteDeadline(deadline)
 			if err != nil {
 				doneChan <- err
 				return
 			}
 
-			// Write the packet to the client.
+			// Write the packet's contents back to the client.
 			n, err = pc.WriteTo(buffer[:n], addr)
 			if err != nil {
 				doneChan <- err
@@ -108,8 +109,8 @@ func server(ctx context.Context, address string) (err error) {
 // client wraps the whole functionality of a UDP client that sends
 // a message and waits for a response coming back from the server
 // that it initially targetted.
-func client(ctx context.Context, address string) (err error) {
-	// CC: explain why this is resolution is needed.
+func client(ctx context.Context, address string, reader io.Reader) (err error) {
+	// TODO: explain why this is resolution is needed.
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return
@@ -136,7 +137,7 @@ func client(ctx context.Context, address string) (err error) {
 		// should only occur in very resource-intensive situations:
 		// - when you've filled up the socket buffer and the OS
 		//   can't dequeue the queue fast enough.
-		n, err := conn.Write([]byte("hello from the client"))
+		n, err := io.Copy(conn, reader)
 		if err != nil {
 			doneChan <- err
 			return
@@ -163,14 +164,14 @@ func client(ctx context.Context, address string) (err error) {
 			return
 		}
 
-		n, addr, err := conn.ReadFrom(buffer)
+		nRead, addr, err := conn.ReadFrom(buffer)
 		if err != nil {
 			doneChan <- err
 			return
 		}
 
-		fmt.Printf("packet-received: bytes=%d from=%s msg=%s\n",
-			n, addr.String(), string(buffer[:n]))
+		fmt.Printf("packet-received: bytes=%d from=%s\n",
+			nRead, addr.String())
 
 		doneChan <- nil
 	}()
@@ -215,8 +216,18 @@ func main() {
 		return
 	}
 
+	reader := os.Stdin
+	if *input != "-" {
+		file, err := os.Open(*input)
+		if err != nil {
+			panic(err)
+		}
+		defer file.Close()
+		reader = file
+	}
+
 	fmt.Println("sending to " + address)
-	err = client(ctx, address)
+	err = client(ctx, address, reader)
 	if err != nil && err != context.Canceled {
 		panic(err)
 	}
