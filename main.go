@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"flag"
-	"io"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -17,7 +17,7 @@ var (
 	port     = flag.Uint("port", 1337, "port to send to or receive from")
 	host     = flag.String("host", "127.0.0.1", "address to send to or receive from")
 	timeout  = flag.Duration("timeout", 15*time.Second, "read and write blocking deadlines")
-	input = flag.String("input", "-", "file with contents to send over udp")
+	input    = flag.String("input", "-", "file with contents to send over udp")
 )
 
 // maxBufferSize specifies the size of the buffers that
@@ -110,7 +110,9 @@ func server(ctx context.Context, address string) (err error) {
 // a message and waits for a response coming back from the server
 // that it initially targetted.
 func client(ctx context.Context, address string, reader io.Reader) (err error) {
-	// TODO: explain why this is resolution is needed.
+	// Resolve the UDP address so that we can make use of DialUDP
+	// with an actual IP and port instead of a name (in case a
+	// hostname is specified).
 	raddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return
@@ -195,7 +197,10 @@ func main() {
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	// Gracefully handle signals so that we can finalize any of our
+	// blocking operations by cancelling their contexts.
 	go func() {
 		sigChan := make(chan os.Signal)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -206,16 +211,15 @@ func main() {
 	if *isServer {
 		fmt.Println("running as a server on " + address)
 		err = server(ctx, address)
-		if err != nil {
-			if err == context.Canceled {
-				return
-			}
-
+		if err != nil && err != context.Canceled {
 			panic(err)
 		}
 		return
 	}
 
+	// allow the client to receive the contents to be sent
+	// either via `stdin` or via a file that can be supplied
+	// via the `-input=` flag.
 	reader := os.Stdin
 	if *input != "-" {
 		file, err := os.Open(*input)
